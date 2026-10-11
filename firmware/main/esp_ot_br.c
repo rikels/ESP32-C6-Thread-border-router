@@ -22,6 +22,9 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
 #include "esp_openthread.h"
 #include "esp_openthread_border_router.h"
 #include "esp_openthread_lock.h"
@@ -72,11 +75,50 @@ static void rcp_failure_hardware_reset_handler(void)
 #endif
 
 #if CONFIG_OPENTHREAD_BORDER_ROUTER && CONFIG_OPENTHREAD_NETWORK_AUTO_START
+// protocol_examples_common reconnects Wi-Fi on its own. As a safety net, restart when Wi-Fi stays down
+// this long: the boot path waits for Wi-Fi and brings the border router back up from scratch.
+#define WIFI_LOST_RESTART_US (60 * 1000000LL)
+
+static esp_timer_handle_t s_wifi_lost_timer;
+
+static void wifi_lost_timeout(void *arg)
+{
+    ESP_LOGE(TAG, "Wi-Fi down for %lld s; restarting", WIFI_LOST_RESTART_US / 1000000);
+    esp_restart();
+}
+
+static void wifi_watchdog_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (!esp_timer_is_active(s_wifi_lost_timer)) {
+            ESP_LOGW(TAG, "Wi-Fi lost; restarting in %lld s unless it reconnects", WIFI_LOST_RESTART_US / 1000000);
+            esp_timer_start_once(s_wifi_lost_timer, WIFI_LOST_RESTART_US);
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        if (esp_timer_is_active(s_wifi_lost_timer)) {
+            ESP_LOGI(TAG, "Wi-Fi reconnected");
+            esp_timer_stop(s_wifi_lost_timer);
+        }
+    }
+}
+
+static void wifi_watchdog_start(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = wifi_lost_timeout,
+        .name = "wifi_lost",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_wifi_lost_timer));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, wifi_watchdog_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_watchdog_handler, NULL));
+}
+
 // Same as esp_openthread_border_router_start() in ot_examples_br, plus: once the border router is up,
 // rejoin the Thread network saved in NVS. Never forms a new network when no dataset is saved.
 static void ot_br_init_and_resume(void *ctx)
 {
     ESP_ERROR_CHECK(example_connect());
+    wifi_watchdog_start();
     esp_openthread_lock_acquire(portMAX_DELAY);
     esp_openthread_set_backbone_netif(get_example_netif());
     ESP_ERROR_CHECK(esp_openthread_set_meshcop_instance_name(CONFIG_OTBR_INSTANCE_NAME));

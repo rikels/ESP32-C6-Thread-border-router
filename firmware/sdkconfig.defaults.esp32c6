@@ -9,5 +9,8 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_OPENTHREAD_NETWORK_AUTO_START=y
 CONFIG_OPENTHREAD_CLI_WIFI=n
 CONFIG_EXAMPLE_CONNECT_WIFI=y
+# Keep retrying when Wi-Fi drops (e.g. a router reboot); the default of 6 gives up for good within seconds.
+# Kconfig has no "retry forever", so use a count that outlasts the restart after 1 minute without Wi-Fi.
+CONFIG_EXAMPLE_WIFI_CONN_MAX_RETRY=1000
 # TREL: Thread over Wi-Fi/LAN, so this router links to Home Assistant's border router even with no radio path.
 CONFIG_OPENTHREAD_RADIO_TREL=y
